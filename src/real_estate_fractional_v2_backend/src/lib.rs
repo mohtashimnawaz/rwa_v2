@@ -4,6 +4,7 @@ use ic_cdk::query;
 use ic_cdk::update;
 use std::collections::HashMap;
 use std::cell::RefCell;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 // Types
 pub type PropertyId = u64;
@@ -82,6 +83,32 @@ pub struct RentalIncomeRecord {
     pub income: u64,
 }
 
+#[derive(CandidType, Deserialize, Clone)]
+pub enum EventType {
+    PropertyRegistered,
+    PropertyMetadataUpdated,
+    PropertyStatusUpdated,
+    SharesIssued,
+    SharesTransferred,
+    SharesListedForSale,
+    SharesBought,
+    RentalIncomeDeposited,
+    RentalIncomeClaimed,
+    ProposalSubmitted,
+    ProposalVoted,
+    ProposalExecuted,
+    RoleSet,
+    KycStatusSet,
+}
+
+#[derive(CandidType, Deserialize, Clone)]
+pub struct Event {
+    pub event_type: EventType,
+    pub timestamp: u64,
+    pub actor: Principal,
+    pub details: String,
+}
+
 thread_local! {
     static PROPERTIES: RefCell<HashMap<PropertyId, Property>> = RefCell::new(HashMap::new());
     static OWNERSHIP: RefCell<HashMap<(PropertyId, Principal), u64>> = RefCell::new(HashMap::new());
@@ -95,6 +122,7 @@ thread_local! {
     static BOOTSTRAPPED: RefCell<bool> = RefCell::new(false);
     static PROPOSALS: RefCell<HashMap<u64, Proposal>> = RefCell::new(HashMap::new());
     static NEXT_PROPOSAL_ID: RefCell<u64> = RefCell::new(1);
+    static EVENTS: RefCell<Vec<Event>> = RefCell::new(Vec::new());
 }
 
 fn get_role(principal: &Principal) -> Role {
@@ -103,6 +131,10 @@ fn get_role(principal: &Principal) -> Role {
 
 fn is_kyc_verified(principal: &Principal) -> bool {
     KYC.with(|kyc| kyc.borrow().get(principal).cloned().unwrap_or(false))
+}
+
+fn now() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs()
 }
 
 #[update]
@@ -114,6 +146,14 @@ pub fn set_kyc_status(user: Principal, status: bool) -> Result<String, String> {
     KYC.with(|kyc| {
         kyc.borrow_mut().insert(user, status);
     });
+    EVENTS.with(|events| {
+        events.borrow_mut().push(Event {
+            event_type: EventType::KycStatusSet,
+            timestamp: now(),
+            actor: caller_principal,
+            details: format!("Set KYC status {} for user {}", status, user),
+        });
+    });
     Ok("KYC status updated".to_string())
 }
 
@@ -124,7 +164,15 @@ pub fn set_role(user: Principal, role: Role) -> Result<String, String> {
         return Err("Only admin can set roles".to_string());
     }
     ROLES.with(|roles| {
-        roles.borrow_mut().insert(user, role);
+        roles.borrow_mut().insert(user, role.clone());
+    });
+    EVENTS.with(|events| {
+        events.borrow_mut().push(Event {
+            event_type: EventType::RoleSet,
+            timestamp: now(),
+            actor: caller_principal,
+            details: format!("Set role {:?} for user {}", role, user),
+        });
     });
     Ok("Role updated".to_string())
 }
@@ -161,6 +209,14 @@ pub fn update_property_metadata(property_id: PropertyId, metadata: PropertyMetad
         let mut props = props.borrow_mut();
         if let Some(prop) = props.get_mut(&property_id) {
             prop.metadata = metadata;
+            EVENTS.with(|events| {
+                events.borrow_mut().push(Event {
+                    event_type: EventType::PropertyMetadataUpdated,
+                    timestamp: now(),
+                    actor: caller,
+                    details: format!("Updated metadata for property {} (id: {})", prop.name, property_id),
+                });
+            });
             Ok("Property metadata updated".to_string())
         } else {
             Err("Property not found".to_string())
@@ -177,6 +233,14 @@ pub fn update_property_status(property_id: PropertyId, status: PropertyStatus, c
         let mut props = props.borrow_mut();
         if let Some(prop) = props.get_mut(&property_id) {
             prop.status = status;
+            EVENTS.with(|events| {
+                events.borrow_mut().push(Event {
+                    event_type: EventType::PropertyStatusUpdated,
+                    timestamp: now(),
+                    actor: caller,
+                    details: format!("Updated status for property {} (id: {}) to {}", prop.name, property_id, status),
+                });
+            });
             Ok("Property status updated".to_string())
         } else {
             Err("Property not found".to_string())
@@ -187,6 +251,7 @@ pub fn update_property_status(property_id: PropertyId, status: PropertyStatus, c
 // Update register_property to include metadata and status
 #[update]
 pub fn register_property(name: String, total_shares: u64, metadata: PropertyMetadata) -> Property {
+    let caller_principal = caller();
     let property = PROPERTIES.with(|props| {
         let mut props = props.borrow_mut();
         let id = NEXT_PROPERTY_ID.with(|id| {
@@ -197,21 +262,29 @@ pub fn register_property(name: String, total_shares: u64, metadata: PropertyMeta
         });
         let property = Property {
             id,
-            name,
+            name: name.clone(),
             total_shares,
             shares_available: total_shares,
-            metadata,
+            metadata: metadata.clone(),
             status: PropertyStatus::Active,
         };
         props.insert(id, property.clone());
         property
+    });
+    EVENTS.with(|events| {
+        events.borrow_mut().push(Event {
+            event_type: EventType::PropertyRegistered,
+            timestamp: now(),
+            actor: caller_principal,
+            details: format!("Registered property: {} (id: {})", name, property.id),
+        });
     });
     property
 }
 
 #[update]
 pub fn issue_shares(property_id: PropertyId, to: Principal, amount: u64) -> Result<String, String> {
-    // Check property exists and has enough shares
+    let caller_principal = caller();
     let mut success = false;
     PROPERTIES.with(|props| {
         let mut props = props.borrow_mut();
@@ -227,6 +300,14 @@ pub fn issue_shares(property_id: PropertyId, to: Principal, amount: u64) -> Resu
         }
     });
     if success {
+        EVENTS.with(|events| {
+            events.borrow_mut().push(Event {
+                event_type: EventType::SharesIssued,
+                timestamp: now(),
+                actor: caller_principal,
+                details: format!("Issued {} shares of property {} to {}", amount, property_id, to),
+            });
+        });
         Ok("Shares issued".to_string())
     } else {
         Err("Not enough shares or property not found".to_string())
@@ -246,6 +327,7 @@ pub fn get_ownership(property_id: PropertyId, user: Principal) -> u64 {
 /// Admin deposits rental income for a property. Distributes to all current owners proportionally.
 #[update]
 pub fn deposit_rental_income(property_id: PropertyId, amount: u64) -> Result<String, String> {
+    let caller_principal = caller();
     // Track total income
     RENTAL_INCOME.with(|ri| {
         let mut ri = ri.borrow_mut();
@@ -274,17 +356,36 @@ pub fn deposit_rental_income(property_id: PropertyId, amount: u64) -> Result<Str
             }
         }
     });
+    EVENTS.with(|events| {
+        events.borrow_mut().push(Event {
+            event_type: EventType::RentalIncomeDeposited,
+            timestamp: now(),
+            actor: caller_principal,
+            details: format!("Deposited rental income {} for property {}", amount, property_id),
+        });
+    });
     Ok("Rental income distributed".to_string())
 }
 
 /// User claims their unclaimed rental income for a property.
 #[update]
 pub fn claim_income(property_id: PropertyId, user: Principal) -> u64 {
+    let caller_principal = caller();
     let mut claimed = 0;
     UNCLAIMED_INCOME.with(|ui| {
         let mut ui = ui.borrow_mut();
         claimed = ui.remove(&(property_id, user)).unwrap_or(0);
     });
+    if claimed > 0 {
+        EVENTS.with(|events| {
+            events.borrow_mut().push(Event {
+                event_type: EventType::RentalIncomeClaimed,
+                timestamp: now(),
+                actor: caller_principal,
+                details: format!("Claimed {} rental income for property {}", claimed, property_id),
+            });
+        });
+    }
     claimed
 }
 
@@ -297,6 +398,7 @@ pub fn get_unclaimed_income(property_id: PropertyId, user: Principal) -> u64 {
 /// List shares for sale on the marketplace
 #[update]
 pub fn list_shares_for_sale(property_id: PropertyId, seller: Principal, amount: u64, price_per_share: u64) -> Result<String, String> {
+    let caller_principal = caller();
     // Check seller owns enough shares
     let owned = OWNERSHIP.with(|own| own.borrow().get(&(property_id, seller)).cloned().unwrap_or(0));
     if owned < amount {
@@ -311,12 +413,21 @@ pub fn list_shares_for_sale(property_id: PropertyId, seller: Principal, amount: 
             price_per_share,
         });
     });
+    EVENTS.with(|events| {
+        events.borrow_mut().push(Event {
+            event_type: EventType::SharesListedForSale,
+            timestamp: now(),
+            actor: caller_principal,
+            details: format!("Listed {} shares of property {} for sale at {} per share", amount, property_id, price_per_share),
+        });
+    });
     Ok("Shares listed for sale".to_string())
 }
 
 /// Buy shares from the marketplace
 #[update]
 pub fn buy_shares(property_id: PropertyId, seller: Principal, buyer: Principal, amount: u64) -> Result<String, String> {
+    let caller_principal = caller();
     let mut found = false;
     MARKETPLACE.with(|mp| {
         let mut mp = mp.borrow_mut();
@@ -341,6 +452,14 @@ pub fn buy_shares(property_id: PropertyId, seller: Principal, buyer: Principal, 
                 mp[pos].amount -= amount;
             }
             found = true;
+            EVENTS.with(|events| {
+                events.borrow_mut().push(Event {
+                    event_type: EventType::SharesBought,
+                    timestamp: now(),
+                    actor: caller_principal,
+                    details: format!("Bought {} shares of property {} from {}", amount, property_id, seller),
+                });
+            });
         }
     });
     if found {
@@ -353,7 +472,8 @@ pub fn buy_shares(property_id: PropertyId, seller: Principal, buyer: Principal, 
 /// Transfer shares directly between users
 #[update]
 pub fn transfer_shares(property_id: PropertyId, from: Principal, to: Principal, amount: u64) -> Result<String, String> {
-    OWNERSHIP.with(|own| {
+    let caller_principal = caller();
+    let result = OWNERSHIP.with(|own| {
         let mut own = own.borrow_mut();
         let from_shares = own.entry((property_id, from)).or_insert(0);
         if *from_shares < amount {
@@ -362,7 +482,18 @@ pub fn transfer_shares(property_id: PropertyId, from: Principal, to: Principal, 
         *from_shares -= amount;
         *own.entry((property_id, to)).or_insert(0) += amount;
         Ok("Shares transferred".to_string())
-    })
+    });
+    if result.is_ok() {
+        EVENTS.with(|events| {
+            events.borrow_mut().push(Event {
+                event_type: EventType::SharesTransferred,
+                timestamp: now(),
+                actor: caller_principal,
+                details: format!("Transferred {} shares of property {} from {} to {}", amount, property_id, from, to),
+            });
+        });
+    }
+    result
 }
 
 /// Get all marketplace listings
@@ -384,7 +515,7 @@ pub fn submit_proposal(property_id: PropertyId, description: String) -> Proposal
         id,
         property_id,
         proposer,
-        description,
+        description: description.clone(),
         status: ProposalStatus::Open,
         yes_votes: 0,
         no_votes: 0,
@@ -392,6 +523,14 @@ pub fn submit_proposal(property_id: PropertyId, description: String) -> Proposal
     };
     PROPOSALS.with(|props| {
         props.borrow_mut().insert(id, proposal.clone());
+    });
+    EVENTS.with(|events| {
+        events.borrow_mut().push(Event {
+            event_type: EventType::ProposalSubmitted,
+            timestamp: now(),
+            actor: proposer,
+            details: format!("Submitted proposal {} for property {}: {}", id, property_id, description),
+        });
     });
     proposal
 }
@@ -421,6 +560,14 @@ pub fn vote_on_proposal(proposal_id: u64, vote: bool) -> Result<String, String> 
                 prop.no_votes += shares;
             }
             found = true;
+            EVENTS.with(|events| {
+                events.borrow_mut().push(Event {
+                    event_type: EventType::ProposalVoted,
+                    timestamp: now(),
+                    actor: voter,
+                    details: format!("Voted {} on proposal {} for property {}", if vote {"yes"} else {"no"}, proposal_id, prop.property_id),
+                });
+            });
         }
     });
     if found {
@@ -432,6 +579,7 @@ pub fn vote_on_proposal(proposal_id: u64, vote: bool) -> Result<String, String> 
 
 #[update]
 pub fn execute_proposal(proposal_id: u64) -> Result<String, String> {
+    let caller_principal = caller();
     let mut result = Err("Proposal not found or not open".to_string());
     PROPOSALS.with(|props| {
         let mut props = props.borrow_mut();
@@ -442,9 +590,16 @@ pub fn execute_proposal(proposal_id: u64) -> Result<String, String> {
             // Simple majority
             if prop.yes_votes > prop.no_votes {
                 prop.status = ProposalStatus::Approved;
-                // Here you could add logic to execute the proposal action
                 prop.status = ProposalStatus::Executed;
                 result = Ok("Proposal approved and executed".to_string());
+                EVENTS.with(|events| {
+                    events.borrow_mut().push(Event {
+                        event_type: EventType::ProposalExecuted,
+                        timestamp: now(),
+                        actor: caller_principal,
+                        details: format!("Executed proposal {} for property {}", proposal_id, prop.property_id),
+                    });
+                });
             } else {
                 prop.status = ProposalStatus::Rejected;
                 result = Ok("Proposal rejected".to_string());
@@ -494,5 +649,15 @@ pub fn get_rental_income_statement(user: Principal) -> Vec<RentalIncomeRecord> {
                 }
             })
             .collect()
+    })
+}
+
+#[query]
+pub fn get_recent_events(n: u64) -> Vec<Event> {
+    EVENTS.with(|events| {
+        let events = events.borrow();
+        let len = events.len();
+        let start = if len > n as usize { len - n as usize } else { 0 };
+        events[start..].to_vec()
     })
 }
