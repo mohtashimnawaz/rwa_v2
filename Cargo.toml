@@ -1,0 +1,5 @@
+[workspace]
+members = [
+    "src/real_estate_fractional_v2_backend"
+]
+resolver = "2"
