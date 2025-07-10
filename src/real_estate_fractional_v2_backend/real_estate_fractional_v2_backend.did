@@ -1,3 +1,68 @@
+type PropertyStatus = variant { Active; Maintenance; Sold; };
+type PropertyMetadata = record {
+  location : text;
+  description : text;
+};
+type ProposalStatus = variant { Open; Approved; Rejected; Executed; };
+type Proposal = record {
+  id : nat64;
+  property_id : nat64;
+  proposer : principal;
+  description : text;
+  status : ProposalStatus;
+  yes_votes : nat64;
+  no_votes : nat64;
+  votes : vec record { principal; bool };
+};
+type OwnershipRecord = record {
+  property_id : nat64;
+  property_name : text;
+  shares : nat64;
+};
+type RentalIncomeRecord = record {
+  property_id : nat64;
+  property_name : text;
+  income : nat64;
+};
+type Property = record {
+  id : nat64;
+  name : text;
+  total_shares : nat64;
+  shares_available : nat64;
+  metadata : PropertyMetadata;
+  status : PropertyStatus;
+};
+type Listing = record {
+  property_id : nat64;
+  seller : principal;
+  amount : nat64;
+  price_per_share : nat64;
+};
+type Role = variant { Admin; Manager; User; };
+
 service : {
-    "greet": (text) -> (text) query;
+  bootstrap_admin : (principal) -> (variant { Ok : text; Err : text });
+  register_property : (text, nat64, PropertyMetadata) -> (Property);
+  update_property_metadata : (nat64, PropertyMetadata, principal) -> (variant { Ok : text; Err : text });
+  update_property_status : (nat64, PropertyStatus, principal) -> (variant { Ok : text; Err : text });
+  set_kyc_status : (principal, bool) -> (variant { Ok : text; Err : text });
+  is_my_kyc_verified : () -> (bool) query;
+  set_role : (principal, Role) -> (variant { Ok : text; Err : text });
+  get_my_role : () -> (Role) query;
+  issue_shares : (nat64, principal, nat64) -> (variant { Ok : text; Err : text });
+  get_property : (nat64) -> (opt Property) query;
+  get_ownership : (nat64, principal) -> (nat64) query;
+  deposit_rental_income : (nat64, nat64) -> (variant { Ok : text; Err : text });
+  claim_income : (nat64, principal) -> (nat64);
+  get_unclaimed_income : (nat64, principal) -> (nat64) query;
+  list_shares_for_sale : (nat64, principal, nat64, nat64) -> (variant { Ok : text; Err : text });
+  buy_shares : (nat64, principal, principal, nat64) -> (variant { Ok : text; Err : text });
+  transfer_shares : (nat64, principal, principal, nat64) -> (variant { Ok : text; Err : text });
+  get_marketplace_listings : () -> (vec Listing) query;
+  submit_proposal : (nat64, text) -> (Proposal);
+  vote_on_proposal : (nat64, bool) -> (variant { Ok : text; Err : text });
+  execute_proposal : (nat64) -> (variant { Ok : text; Err : text });
+  get_proposals : (nat64) -> (vec Proposal) query;
+  get_ownership_statement : (principal) -> (vec OwnershipRecord) query;
+  get_rental_income_statement : (principal) -> (vec RentalIncomeRecord) query;
 }
