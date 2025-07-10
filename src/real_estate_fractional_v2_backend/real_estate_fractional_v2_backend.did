@@ -40,6 +40,30 @@ type Listing = record {
 };
 type Role = variant { Admin; Manager; User; };
 
+type EventType = variant {
+  PropertyRegistered;
+  PropertyMetadataUpdated;
+  PropertyStatusUpdated;
+  SharesIssued;
+  SharesTransferred;
+  SharesListedForSale;
+  SharesBought;
+  RentalIncomeDeposited;
+  RentalIncomeClaimed;
+  ProposalSubmitted;
+  ProposalVoted;
+  ProposalExecuted;
+  RoleSet;
+  KycStatusSet;
+};
+
+type Event = record {
+  event_type : EventType;
+  timestamp : nat64;
+  actor : principal;
+  details : text;
+};
+
 service : {
   bootstrap_admin : (principal) -> (variant { Ok : text; Err : text });
   register_property : (text, nat64, PropertyMetadata) -> (Property);
@@ -65,4 +89,5 @@ service : {
   get_proposals : (nat64) -> (vec Proposal) query;
   get_ownership_statement : (principal) -> (vec OwnershipRecord) query;
   get_rental_income_statement : (principal) -> (vec RentalIncomeRecord) query;
+  get_recent_events : (nat64) -> (vec Event) query;
 }

@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub type PropertyId = u64;
 pub type UserId = String; // For now, use Principal as String
 
-#[derive(CandidType, Deserialize, Clone, PartialEq, Eq, Hash)]
+#[derive(CandidType, Deserialize, Clone, PartialEq, Eq, Hash, Debug)]
 pub enum Role {
     Admin,
     Manager,
@@ -42,7 +42,7 @@ pub struct Listing {
 }
 
 // Ensure PropertyStatus is defined at the top level
-#[derive(CandidType, Deserialize, Clone, PartialEq)]
+#[derive(CandidType, Deserialize, Clone, PartialEq, Debug)]
 pub enum PropertyStatus {
     Active,
     Maintenance,
@@ -229,6 +229,7 @@ pub fn update_property_status(property_id: PropertyId, status: PropertyStatus, c
     if get_role(&caller) != Role::Admin {
         return Err("Only admin can update property status".to_string());
     }
+    let status_for_log = status.clone();
     PROPERTIES.with(|props| {
         let mut props = props.borrow_mut();
         if let Some(prop) = props.get_mut(&property_id) {
@@ -238,7 +239,7 @@ pub fn update_property_status(property_id: PropertyId, status: PropertyStatus, c
                     event_type: EventType::PropertyStatusUpdated,
                     timestamp: now(),
                     actor: caller,
-                    details: format!("Updated status for property {} (id: {}) to {}", prop.name, property_id, status),
+                    details: format!("Updated status for property {} (id: {}) to {:?}", prop.name, property_id, status_for_log),
                 });
             });
             Ok("Property status updated".to_string())
